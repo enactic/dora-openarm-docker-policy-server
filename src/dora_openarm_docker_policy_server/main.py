@@ -30,13 +30,24 @@ def _main_dora(io, host_shared_dir, container_shared_dir):
     data_files = []
 
     node = dora.Node()
+    previous_observation_id = None
     for event in node:
         if event["type"] != "INPUT":
             continue
 
         # Main process
         def prepare_request():
+            nonlocal previous_observation_id
             observation = event["value"]
+            observation_id = observation.field("id")[0].as_py()
+            # The observation id increments per observation and drops back to a
+            # lower value when a new episode starts, so a decrease (or the very
+            # first observation) signals a reset to the policy server.
+            reset = (
+                previous_observation_id is None
+                or observation_id < previous_observation_id
+            )
+            previous_observation_id = observation_id
             host_data_file = tempfile.NamedTemporaryFile(
                 suffix=".arrow", dir=host_shared_dir, delete_on_close=False
             )
@@ -53,11 +64,13 @@ def _main_dora(io, host_shared_dir, container_shared_dir):
             return {
                 "name": "inference",
                 "data_path": container_data_path,
+                "reset": reset,
                 "metadata": event["metadata"],
             }
 
         # dora-rs node -> Policy server: Inference request
-        #   {"name": "inference", "data_path": "/data/path.arrow", ...}
+        #   {"name": "inference", "data_path": "/data/path.arrow",
+        #    "reset": true/false, ...}
         #
         # "/data/path.arrow" has a record batch:
         #   {
@@ -99,7 +112,10 @@ def _main_dora(io, host_shared_dir, container_shared_dir):
             break
         actions = json.loads(response)
         if actions["positions"]:
-            metadata = {"interval": actions["interval"]}
+            # "reset" signals that these actions are the first of a new episode,
+            # so downstream nodes can drop any state carried over from the
+            # previous episode.
+            metadata = {"interval": actions["interval"], "reset": request["reset"]}
             if "cutoff_hz" in actions:
                 metadata["cutoff_hz"] = actions["cutoff_hz"]
             node.send_output(
