@@ -39,7 +39,7 @@ def _main_dora(io, host_shared_dir, container_shared_dir):
         def prepare_request():
             nonlocal previous_observation_id
             observation = event["value"]
-            observation_id = observation.field("observation_id")[0].as_py()
+            observation_id = observation.field("id")[0].as_py()
             # The observation id increments per observation and drops back to a
             # lower value when a new episode starts, so a decrease (or the very
             # first observation) signals a reset to the policy server.
@@ -52,9 +52,6 @@ def _main_dora(io, host_shared_dir, container_shared_dir):
                 suffix=".arrow", dir=host_shared_dir, delete_on_close=False
             )
             record_batch = pa.RecordBatch.from_struct_array(observation)
-            record_batch = record_batch.append_column(
-                "reset", pa.array([reset], type=pa.bool_())
-            )
             with pa.output_stream(host_data_file) as output:
                 with pa.ipc.new_file(output, record_batch.schema) as writer:
                     writer.write(record_batch)
@@ -64,14 +61,16 @@ def _main_dora(io, host_shared_dir, container_shared_dir):
             container_data_path = os.path.join(
                 container_shared_dir, os.path.basename(host_data_file.name)
             )
-            return reset, {
+            return {
                 "name": "inference",
                 "data_path": container_data_path,
+                "reset": reset,
                 "metadata": event["metadata"],
             }
 
         # dora-rs node -> Policy server: Inference request
-        #   {"name": "inference", "data_path": "/data/path.arrow", ...}
+        #   {"name": "inference", "data_path": "/data/path.arrow",
+        #    "reset": true/false, ...}
         #
         # "/data/path.arrow" has a record batch:
         #   {
@@ -92,7 +91,7 @@ def _main_dora(io, host_shared_dir, container_shared_dir):
         #     "camera_ceiling": pa.list_(pa.uint8()),
         #     }
         #   }
-        reset, request = prepare_request()
+        request = prepare_request()
         io.write(json.dumps(request) + "\n")
         io.flush()
 
@@ -116,7 +115,7 @@ def _main_dora(io, host_shared_dir, container_shared_dir):
             # "reset" signals that these actions are the first of a new episode,
             # so downstream nodes can drop any state carried over from the
             # previous episode.
-            metadata = {"interval": actions["interval"], "reset": reset}
+            metadata = {"interval": actions["interval"], "reset": request["reset"]}
             if "cutoff_hz" in actions:
                 metadata["cutoff_hz"] = actions["cutoff_hz"]
             node.send_output(
