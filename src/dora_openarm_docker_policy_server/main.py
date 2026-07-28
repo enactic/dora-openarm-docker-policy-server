@@ -142,6 +142,12 @@ def main():
         default=[],
         help="The additional volumes for the Docker container",
     )
+    parser.add_argument(
+        "--pull-policy",
+        default=os.getenv("PULL_POLICY", "missing"),
+        choices=["missing", "always", "never"],
+        help="The Docker image pull policy",
+    )
     args = parser.parse_args()
 
     docker = shutil.which("docker")
@@ -161,6 +167,7 @@ def main():
                 "--gpus=all",
                 "--interactive",
                 "--network=none",  # Disable network for security
+                f"--pull={args.pull_policy}",
                 "--rm",
                 f"--volume={host_shared_dir}:{container_shared_dir}:ro",
                 "--volume=cache:/cache",
